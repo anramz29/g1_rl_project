@@ -37,7 +37,7 @@ print(f"Log directory: {log_dir}")
 print(f"{'='*60}\n")
 
 # Create environment (no rendering for speed)
-env = G1BoxGraspEnv(render_mode=None) #replace this with "human" to see it train. alternatievly use g1_box_grasp_eval.py. Use None if you don't want to render.
+env = G1BoxGraspEnv(render_mode="human") #replace this with "human" to see it train. alternatievly use g1_box_grasp_eval.py. Use None if you don't want to render.
 obs, info = env.reset()
 
 
