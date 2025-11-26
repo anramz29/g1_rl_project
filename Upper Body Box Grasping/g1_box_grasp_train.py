@@ -14,7 +14,7 @@ RESUME_FROM_CHECKPOINT = True
 
 # Define Run Name
 timestamp = datetime.now().strftime("%d_%H_%M_%S")
-n_steps = 10_000_000  # Start with 2M steps for initial testing
+n_steps = 2_000_000  # Start with 2M steps for initial testing
 run_name = f"g1_box_grasp_{n_steps}_steps_{timestamp}"
 
 # Log Directory

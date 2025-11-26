@@ -172,7 +172,7 @@ class G1BoxGraspEnv(gym.Env):
             obs_high.extend(self.model.actuator_ctrlrange[self.left_arm_actuators, 1])
         
         # Arm velocity limits (keep slow!)
-        max_arm_vel = 2.0  # rad/s - adjust this to control speed of robot's arms
+        max_arm_vel = 1.0  # rad/s - adjust this to control speed of robot's arms
         obs_low.extend([-max_arm_vel] * 8)  # 4 DOF x 2 arms
         obs_high.extend([max_arm_vel] * 8)
         
@@ -221,7 +221,7 @@ class G1BoxGraspEnv(gym.Env):
     def _setup_initial_state(self):
         """Load keyframe and setup initial positions"""
         # Load arms_bent_fingers_open keyframe
-        load_keyframe(self.model, self.data, "arms_bent_fingers_open")
+        load_keyframe(self.model, self.data, "stand")
         
         # Position table and box
         set_body_position(self.model, self.data, "table_box", x=0.7, y=0.0, z=0.3)
@@ -351,7 +351,7 @@ class G1BoxGraspEnv(gym.Env):
         reward = 0.0
 
         # Adjusted weights for better balance
-        w_reach = 3.0
+        w_reach = 5.0
         w_contact = 8.0
         w_lift = 10.0
         w_force = 2.0
@@ -389,6 +389,7 @@ class G1BoxGraspEnv(gym.Env):
             bilateral_bonus = 10.0
             reward += w_contact * bilateral_bonus
         
+        
         # 3. GRIP FORCE REWARD: Only when in contact
         if left_touching or right_touching:
             # Use max force instead of sum to avoid inflated values
@@ -403,50 +404,53 @@ class G1BoxGraspEnv(gym.Env):
                 if total_force < self.min_grip_force:
                     # Too weak - encourage more force
                     force_reward = 2.0 * (total_force / self.min_grip_force)
-                elif total_force > self.max_safe_grip_force * 2:
+                elif total_force > self.max_safe_grip_force * 4: # I'm increasing this to 4x for now to hopefully give it more strength
                     # Way too strong - penalize heavily
-                    force_reward = -5.0
+                     force_reward = -5.0
                 else:
                     # In reasonable range - reward being close to ideal
-                    ideal_total = self.ideal_grip_force * 2  # Both hands
+                    ideal_total = self.ideal_grip_force * 4  # Both hands   # I'm increasing this to 4x for now to hopefully give it more strength
                     force_error = abs(total_force - ideal_total) / ideal_total
                     force_reward = 3.0 * np.exp(-2.0 * force_error)
                 
                 reward += w_force * force_reward
 
-        # 4. LIFT HEIGHT REWARD: Unconditional progress reward
-        current_height = box_pos[2]
-        height_progress = current_height - self.initial_box_pos[2]
-        
-        # Reward any upward progress
-        progress_reward = 5.0 * max(0, height_progress)
-        
-        # Big bonus for reaching target
-        height_error = abs(current_height - self.target_lift_height)
-        if height_error < 0.05:  # Within 5cm
-            target_bonus = 20.0
-        else:
-            target_bonus = max(0, 10.0 - 20.0 * height_error)  # Gradual approach to target
-        
-        reward += w_lift * (progress_reward + target_bonus)
-        
-        # 5. STABILITY REWARDS: Only when box is lifted
-        if height_progress > 0.05:  # Only care about stability when lifted
-            # Box velocity should be low
-            box_vel = self.data.qvel[self.box_qvel_start:self.box_qvel_start+6]
-            box_speed = np.linalg.norm(box_vel[:3])
-            velocity_reward = np.exp(-2.0 * box_speed)  # Reward low velocity
+        # 4. LIFT HEIGHT REWARD: Only when grasping
+        totalHeightReward = 0
+        if left_touching and right_touching:
+            current_height = box_pos[2]
+            height_progress = current_height - self.initial_box_pos[2]
             
-            # Box should maintain XY position
-            xy_drift = np.linalg.norm(box_pos[:2] - self.initial_box_pos[:2])
-            position_reward = np.exp(-5.0 * xy_drift)  # Reward staying in place
+            # Reward upward progress
+            progress_reward = 5.0 * max(0, height_progress)
             
-            # Box orientation should stay upright
-            box_quat = self.data.qpos[self.box_qpos_start+3:self.box_qpos_start+7]
-            orientation_reward = 2.0 * abs(box_quat[0])  # quat[0] should be ~1
+            # Bonus for reaching target
+            height_error = abs(current_height - self.target_lift_height)
+            if height_error < 0.05:
+                target_bonus = 20.0
+            else:
+                target_bonus = 0.0  # No partial credit - either at target or not
             
-            stability_reward = velocity_reward + position_reward + orientation_reward
-            reward += w_stability * stability_reward
+            totalHeightReward = w_lift * (progress_reward + target_bonus)
+            reward += totalHeightReward
+        
+            # 5. STABILITY REWARDS: Only when box is lifted
+            if height_progress > 0.05:  # Only care about stability when lifted
+                # Box velocity should be low
+                box_vel = self.data.qvel[self.box_qvel_start:self.box_qvel_start+6]
+                box_speed = np.linalg.norm(box_vel[:3])
+                velocity_reward = np.exp(-2.0 * box_speed)  # Reward low velocity
+                
+                # Box should maintain XY position
+                xy_drift = np.linalg.norm(box_pos[:2] - self.initial_box_pos[:2])
+                position_reward = np.exp(-5.0 * xy_drift)  # Reward staying in place
+                
+                # Box orientation should stay upright
+                box_quat = self.data.qpos[self.box_qpos_start+3:self.box_qpos_start+7]
+                orientation_reward = 2.0 * abs(box_quat[0])  # quat[0] should be ~1
+                
+                stability_reward = velocity_reward + position_reward + orientation_reward
+                reward += w_stability * stability_reward
         
         # 6. CONTROL COST: Penalize large actions
         left_arm_ctrl = self.data.ctrl[self.left_arm_actuators]
@@ -455,6 +459,17 @@ class G1BoxGraspEnv(gym.Env):
         
         # 7. ALIVE BONUS: Small reward for staying alive
         reward += w_alive
+
+        """
+        if self.current_step % 100 == 0:  # Print every 100 steps to avoid spam
+            print(f"Step {self.current_step:4d} | "
+                f"Reach: {w_reach * reaching_reward:6.1f} | "
+                f"Contact: {w_contact * (left_contact_reward + right_contact_reward):6.1f} | "
+                f"Lift: {totalHeightReward:6.1f} | "
+                f"Alive: {w_alive:6.1f} | "
+                f"Total: {reward:8.1f}")
+        """
+        
         
         return reward
     
@@ -561,7 +576,12 @@ class G1BoxGraspEnv(gym.Env):
         self._setup_initial_state()
 
         box_x_offset = np.random.uniform(0, 0.2)
+        box_y_offset = np.random.uniform(0, 0.2)
+
         set_body_position(self.model, self.data, "cardboard_box", x=0.42 + box_x_offset, y=0.0, z=0.76)
+        mujoco.mj_forward(self.model, self.data)
+        self.initial_box_pos = self.data.qpos[self.box_qpos_start:self.box_qpos_start+3].copy()
+
         
         # Add small noise to arm positions
         noise_scale = 0.01
@@ -580,6 +600,7 @@ class G1BoxGraspEnv(gym.Env):
         self.current_step = 0
         obs = self.get_obs()
         info = {}
+
         
         return obs, info
     
