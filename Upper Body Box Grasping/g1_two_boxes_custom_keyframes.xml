@@ -455,7 +455,7 @@
     <!-- Cardboard Box (pos doesn't matter it gets reset. make sure it's in you keyframe though, those need the right number of elements to work I believe) -->
     <body name="cardboard_box" pos="0 0 0"> 
       <freejoint/>
-      <inertial pos="0 0 0" mass="2.3" diaginertia="0.02 0.02 0.02"/>
+      <inertial pos="0 0 0" mass="0.56" diaginertia="0.02 0.02 0.02"/>
       <geom name="box_geom" 
             type="box" 
             size="0.14 0.15 0.16" 
@@ -474,6 +474,43 @@
             rgba="0.9 0.3 0.3 1.0" 
             friction="0.7 0.005 0.0001"
             density="1"/>
+    </body>
+
+    <!-- Target visualization spheres (mocap bodies can be moved freely) -->
+    <body name="left_target_viz" mocap="true">
+      <geom name="left_target_sphere" 
+            type="sphere" 
+            size="0.03" 
+            rgba="1 0 0 0.7" 
+            contype="0" 
+            conaffinity="0"/>
+    </body>
+
+    <body name="right_target_viz" mocap="true">
+      <geom name="right_target_sphere" 
+            type="sphere" 
+            size="0.03" 
+            rgba="0 0 1 0.7" 
+            contype="0" 
+            conaffinity="0"/>
+    </body>
+
+    <body name="left_hand_viz" mocap="true">
+      <geom name="left_hand_sphere" 
+            type="sphere" 
+            size="0.03" 
+            rgba="1 0 0 0.7" 
+            contype="0" 
+            conaffinity="0"/>
+    </body>
+
+    <body name="right_hand_viz" mocap="true">
+      <geom name="right_hand_sphere" 
+            type="sphere" 
+            size="0.03" 
+            rgba="0 0 1 0.7" 
+            contype="0" 
+            conaffinity="0"/>
     </body>
 
   </worldbody>

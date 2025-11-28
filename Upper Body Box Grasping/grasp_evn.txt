@@ -345,7 +345,6 @@ class G1BoxGraspEnv(gym.Env):
         return 0.0
     
 
-
     # =================================================================
     # REWARD FUNCTION
     # =================================================================
@@ -366,7 +365,7 @@ class G1BoxGraspEnv(gym.Env):
 
         # Adjusted weights for better balance
         w_reach = 8.0
-        w_contact = 5.0
+        w_contact = 8.0
         w_lift = 10.0
         w_force = 2.0
         w_stability = 0.5
@@ -393,38 +392,15 @@ class G1BoxGraspEnv(gym.Env):
                         self.data.xpos[right_middle_id]) / 3.0
         
         # 1. REACHING REWARD: Hands move toward box sides
-        xNudge = 0
-        target_left = box_pos + np.array([xNudge, self.box_half_depth, 0])
-        target_right = box_pos + np.array([xNudge,  -self.box_half_depth, 0])
+        xNudge = 3*self.box_half_depth/4
+        target_left = box_pos + np.array([xNudge, -self.box_half_depth, 0])
+        target_right = box_pos + np.array([xNudge, self.box_half_depth, 0])
 
         left_dist = np.linalg.norm(left_hand_pos - target_left)
         right_dist = np.linalg.norm(right_hand_pos - target_right)
         
-        
-        # --- New logic: choose linear vs exponential based on hand Z ---
-        box_z = box_pos[2]
-        z_low  = box_z - 0.02    # allowable vertical region
-
-        def reach_term(hand_pos, target_pos):
-            hand_z = hand_pos[2]
-
-            if z_low < hand_z:
-                # Use linear reward for strong horizontal motivation
-                return 10.0 - 5.0 * np.linalg.norm(hand_pos - target_pos)
-            else:
-                # Use exponential reward for gentle shaping outside Z range
-                return np.exp(-2 * np.linalg.norm(hand_pos - target_pos))
-
-        left_reach = reach_term(left_hand_pos, target_left)
-        right_reach = reach_term(right_hand_pos, target_right)
-        
-        """
-        left_reach = 2.0*(np.exp(-0.5 * left_dist))
-        right_reach = 2.0*(np.exp(-0.5 * right_dist))
-        """
-
-
-        reaching_reward = left_reach + right_reach
+        # Use exponential decay for smoother reward
+        reaching_reward = np.exp(-2.0 * left_dist) + np.exp(-2.0 * right_dist)
         reward += w_reach * reaching_reward
 
         # 2. CONTACT REWARD: Only reward if hands are near the target positions
@@ -432,20 +408,19 @@ class G1BoxGraspEnv(gym.Env):
         right_touching = any(self.check_contact(body, "box_geom") for body in self.right_hand_bodies)
 
         # Calculate target positions
-        #xNudge = 3*self.box_half_depth/4
-        xNudge = 0
-        target_left = box_pos + np.array([xNudge, self.box_half_depth, 0])
-        target_right = box_pos + np.array([xNudge, -self.box_half_depth, 0])
+        xNudge = 3*self.box_half_depth/4
+        target_left = box_pos + np.array([xNudge, -self.box_half_depth, 0])
+        target_right = box_pos + np.array([xNudge, self.box_half_depth, 0])
 
         left_dist = np.linalg.norm(left_hand_pos - target_left)
         right_dist = np.linalg.norm(right_hand_pos - target_right)
 
         # Only reward contact if hand is NEAR the correct position
-        contact_threshold = 0.8  # Within 8cm of target
+        contact_threshold = 0.80  # Within 8cm of target
 
         if left_touching and left_dist < contact_threshold:
             left_contact_reward = 10.0  # Good contact!
-        elif left_touching:   
+        elif left_touching:
             left_contact_reward = -2.0  # Bad contact (wrong position)
         else:
             left_contact_reward = 0.0
@@ -573,11 +548,11 @@ class G1BoxGraspEnv(gym.Env):
             print(f"Step {self.current_step:4d} | "
                 f"Reach: {w_reach * reaching_reward:6.1f} | "
                 f"Contact: {w_contact * (left_contact_reward + right_contact_reward):6.1f} | "
-                #f"Lift: {totalHeightReward:6.1f} | "
+                f"Lift: {totalHeightReward:6.1f} | "
                 f"Alive: {w_alive:6.1f} | "
                 f"Total: {reward:8.1f}")
-        
         """
+        
         
         
         return reward
@@ -634,7 +609,7 @@ class G1BoxGraspEnv(gym.Env):
         
         # Box moved too far from starting XY position
         xy_dist = np.linalg.norm(box_pos[:2] - self.initial_box_pos[:2])
-        if xy_dist > 0.15:
+        if xy_dist > 0.3:
             return True
         
         # Box rotated too much from initial orientation
@@ -644,7 +619,7 @@ class G1BoxGraspEnv(gym.Env):
         box_rot_mat = box_rot.reshape(3, 3)
         
         world_axes = np.eye(3)
-        max_tilt_degrees = 15
+        max_tilt_degrees = 30
         min_alignment = np.cos(np.radians(max_tilt_degrees))
         
         for i in range(3):
@@ -754,46 +729,6 @@ class G1BoxGraspEnv(gym.Env):
         # Check termination
         terminated = self.terminate()
         truncated = False
-
-        # UPDATE VISUALIZATION SPHERES (if rendering)
-        if self.render_mode == "human":
-            # Get mocap IDs
-            left_target_mocap_id = self.model.body_mocapid[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_target_viz")]
-            right_target_mocap_id = self.model.body_mocapid[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_target_viz")]
-            left_hand_mocap_id = self.model.body_mocapid[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_viz")]
-            right_hand_mocap_id = self.model.body_mocapid[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_viz")]
-            
-            # Calculate positions (same as in reward function)
-            box_pos = self.data.qpos[self.box_qpos_start:self.box_qpos_start+3]
-            
-            # Hand positions (averaged)
-            left_thumb_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_thumb_0_link")
-            left_index_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_index_0_link")
-            left_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_middle_0_link")
-            
-            right_thumb_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_thumb_0_link")
-            right_index_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_index_0_link")
-            right_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_middle_0_link")
-            
-            left_hand_pos = (self.data.xpos[left_thumb_id] + 
-                            self.data.xpos[left_index_id] + 
-                            self.data.xpos[left_middle_id]) / 3.0
-            
-            right_hand_pos = (self.data.xpos[right_thumb_id] + 
-                            self.data.xpos[right_index_id] + 
-                            self.data.xpos[right_middle_id]) / 3.0
-            
-            # Target positions
-            #xNudge = 3*self.box_half_depth/4
-            xNudge = 0
-            target_left = box_pos + np.array([xNudge, self.box_half_depth, 0])
-            target_right = box_pos + np.array([xNudge, -self.box_half_depth, 0])
-            
-            # Update sphere positions
-            self.data.mocap_pos[left_target_mocap_id] = target_left
-            self.data.mocap_pos[right_target_mocap_id] = target_right
-            self.data.mocap_pos[left_hand_mocap_id] = left_hand_pos
-            self.data.mocap_pos[right_hand_mocap_id] = right_hand_pos
         
         # Info
         box_pos = self.data.qpos[self.box_qpos_start:self.box_qpos_start+3]
