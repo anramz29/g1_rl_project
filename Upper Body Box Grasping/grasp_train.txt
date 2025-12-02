@@ -4,8 +4,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.ppo import MlpPolicy
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
-#from g1_box_grasp_env import G1BoxGraspEnv
-from g1_box_grasp_env_both_arms import G1BoxGraspEnv
+from g1_box_grasp_env import G1BoxGraspEnv
 import numpy as np
 from datetime import datetime
 import os
@@ -17,7 +16,7 @@ n_steps = 1_000_000
 def make_env():
     """Create environment instance"""
     def _init():
-        return G1BoxGraspEnv(render_mode=None) #change between None or "human" to toggle visualizing while training
+        return G1BoxGraspEnv(render_mode=None)
     return _init
 
 def find_latest_checkpoint_global():

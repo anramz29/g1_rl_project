@@ -187,7 +187,7 @@ def calculate_reward(model, data):
     right_dist = np.linalg.norm(right_hand_pos - target_right)
 
     # Only reward contact if hand is NEAR the correct position
-    contact_threshold = 0.25 
+    contact_threshold = 0.08
 
     if left_touching and left_dist < contact_threshold:
         left_contact_reward = 10.0  # Good contact!
@@ -237,7 +237,7 @@ def calculate_reward(model, data):
     palm_orientation_reward = 2.0 * (left_alignment + right_alignment)  # Max = 4.0
     reward += palm_orientation_reward
     
-    
+    """
     # 3. GRIP FORCE REWARD: Only when in contact
     if left_touching or right_touching:
         # Use max force instead of sum to avoid inflated values
@@ -308,7 +308,7 @@ def calculate_reward(model, data):
             
             stability_reward = velocity_reward + position_reward + orientation_reward
             reward += w_stability * stability_reward
-    
+    """
     # 6. CONTROL COST: Penalize large actions
     # In this manual script we do not drive actuators (user moves manually),
     # still use data.ctrl for a small control penalty as in original code.
