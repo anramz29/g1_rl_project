@@ -262,7 +262,7 @@ class G1BoxGraspEnv(gym.Env):
     def _setup_initial_state(self):
         """Load keyframe and setup initial positions"""
         # Load arms_bent_fingers_open keyframe
-        load_keyframe(self.model, self.data, "stand_thumbs_open") #stand_thumbs_open
+        load_keyframe(self.model, self.data, "arms_out_ready_to_grab") #stand_thumbs_open
         
         # Position table and box
         set_body_position(self.model, self.data, "table_box", x=0.7, y=0.0, z=0.3)

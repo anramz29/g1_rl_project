@@ -6,13 +6,13 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 # from g1_box_grasp_env import G1BoxGraspEnv
-from g1_box_grasp_env_high_approach import G1BoxGraspEnv
+from g1_box_grasp_env_both_arms_adrian import G1BoxGraspEnv
 import numpy as np
 from datetime import datetime
 import os
 
 # Configuration
-RESUME_FROM_CHECKPOINT = True
+RESUME_FROM_CHECKPOINT = False
 n_steps = 1_000_000
 
 def make_env():
