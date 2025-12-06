@@ -1,7 +1,7 @@
 # g1_box_grasp_eval.py
 
 from stable_baselines3 import PPO
-from g1_box_grasp_env_both_arms_adrian_v2 import G1BoxGraspEnv
+from g1_box_grasp_env_both_arms_adrian import G1BoxGraspEnv
 import sys
 import os
 
