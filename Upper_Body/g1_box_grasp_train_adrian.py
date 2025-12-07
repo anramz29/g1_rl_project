@@ -6,7 +6,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 # from g1_box_grasp_env import G1BoxGraspEnv
-from g1_box_grasp_env_both_arms_adrian_v2 import G1BoxGraspEnv
+from g1_box_grasp_env_both_arms_adrian import G1BoxGraspEnv
 import numpy as np
 from datetime import datetime
 import os
@@ -80,7 +80,7 @@ if __name__ == '__main__':
     print(f"{'='*60}\n")
     
     # Create parallel environments
-    num_envs = 8
+    num_envs = 6
     env = SubprocVecEnv([make_env() for _ in range(num_envs)])
     obs = env.reset()
     
