@@ -455,12 +455,12 @@
     <!-- Cardboard Box (pos doesn't matter it gets reset. make sure it's in you keyframe though, those need the right number of elements to work I believe) -->
     <body name="cardboard_box" pos="0 0 0"> 
       <freejoint/>
-      <inertial pos="0 0 0" mass="0.56" diaginertia="0.02 0.02 0.02"/>
+      <inertial pos="0 0 0" mass="0.30" diaginertia="0.02 0.02 0.02"/>
       <geom name="box_geom" 
             type="box" 
-            size="0.14 0.15 0.16" 
+            size="0.14 0.14 0.20" 
             rgba="0.8 0.6 0.4 1.0" 
-            friction="1.2 0.005 0.0001"
+            friction="2.0 0.005 0.0001"
             density="1"/>
     </body>
 
@@ -618,6 +618,8 @@
       0.516480 0.000000 0.724300 -0.000000 -0.000000 -0.000000 -0.000000 
       -0.000000 "
     />
+
+
 
     <key name="stand_thumbs_open"
       qpos="
