@@ -6,7 +6,8 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 # from g1_box_grasp_env import G1BoxGraspEnv
-from g1_box_grasp_env_both_arms_adrian import G1BoxGraspEnv
+from g1_reward_debug import RewardDebugCallback
+from g1_box_grasp_env_both_arms_adrian_original import G1BoxGraspEnv
 import numpy as np
 from datetime import datetime
 import os
@@ -80,7 +81,7 @@ if __name__ == '__main__':
     print(f"{'='*60}\n")
     
     # Create parallel environments
-    num_envs = 6
+    num_envs = 4
     env = SubprocVecEnv([make_env() for _ in range(num_envs)])
     obs = env.reset()
     
@@ -111,7 +112,7 @@ if __name__ == '__main__':
                 MlpPolicy,
                 env,
                 verbose=1,
-                learning_rate=3e-4,
+                learning_rate=1e-4,
                 n_steps=2048,
                 batch_size=64,
                 n_epochs=10,
@@ -139,6 +140,13 @@ if __name__ == '__main__':
             tensorboard_log=log_dir
         )
     
+
+    
+    print("Starting training with 4 parallel environments...")
+    print("Run this in a terminal to monitor:\n")
+    print("  tensorboard --logdir rl_logs/\n")
+
+    # Callbacks
     # Checkpoint callback
     checkpoint_callback = CheckpointCallback(
         save_freq=5000,
@@ -159,11 +167,12 @@ if __name__ == '__main__':
         render=False,
     )
 
-    callback = CallbackList([checkpoint_callback, eval_callback])
-    
-    print("Starting training with 4 parallel environments...")
-    print("Run this in a terminal to monitor:\n")
-    print("  tensorboard --logdir rl_logs/\n")
+    # Your debug callback for reward components → TensorBoard
+    debug_callback = RewardDebugCallback(log_freq=100)
+
+    # Combine them all
+    callback = CallbackList([checkpoint_callback, eval_callback, debug_callback])
+
     
     # Train
     model.learn(

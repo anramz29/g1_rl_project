@@ -30,6 +30,48 @@ class G1BoxGraspEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
 
         # -----------------------------
+        # Geom / body ids for contacts & positions
+        # -----------------------------
+        # Box
+        self.box_geom_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_GEOM, "box_geom"
+        )
+        self.box_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "cardboard_box"
+        )
+
+        # Left hand thumb + index fingertip bodies (for positions)
+        self.left_thumb_tip_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_thumb_finger_tip"
+        )
+        self.left_index_tip_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_index_finger_tip"
+        )
+
+        # If you want right hand too, add similar ids here
+        self.right_thumb_tip_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_thumb_finger_tip"
+        )
+        self.right_index_tip_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_index_finger_tip"
+        )
+
+
+        # Geoms that represent thumb/finger contact surfaces
+        # (if you added fingertip spheres with class="finger_collision", name them!)
+        # For now, use the whole thumb links as collision if you don't have separate geoms.
+        self.left_thumb_geom_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_hand_thumb_0_link"),
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_hand_thumb_1_link"),
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_hand_thumb_2_link"),
+        ]
+        self.left_index_geom_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_hand_index_0_link"),
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_hand_index_1_link"),
+        ]
+
+
+        # -----------------------------
         # Wrist joint indices (qpos / qvel)
         # -----------------------------
         # Left wrist joints
@@ -105,7 +147,7 @@ class G1BoxGraspEnv(gym.Env):
         
         # Box dimensions (size in XML is "0.14 0.15 0.16" = X Y Z half-widths)
         self.box_half_width = box_size[0]   # X dimension
-        self.box_half_depth = box_size[1]   # Y dimension (the sides to grasp!)
+        self.box_half_depth = box_size[1]
         self.box_half_height = box_size[2]  # Z dimension
 
         self.left_hand_bodies = [
@@ -179,7 +221,7 @@ class G1BoxGraspEnv(gym.Env):
 
         # Get initial box height and set target
         initial_box_height = self.data.qpos[self.box_qpos_start + 2]  # Z coordinate
-        self.target_lift_height = initial_box_height + 0.3  # Lift 0.3m from starting height
+        self.target_lift_height = initial_box_height + 0.5  # Lift 0.3m from starting height
         # I'm (for now at least) setting the training to lift the box by around a foot. because of the starting values this ends up being 1 meter total in the air.
         
         # Calculate required grip force (from ROM)
@@ -200,25 +242,23 @@ class G1BoxGraspEnv(gym.Env):
         
         # Define actuator groups
         self.locked_actuators = list(range(0, 15))  # Legs + Waist
-        self.left_arm_actuators = [15, 16, 17, 18, 21]  # shoulder pitch/roll/yaw, elbow, wrist_yaw
-        self.right_arm_actuators = [29, 30, 31, 32, 35]  # shoulder pitch/roll/yaw, elbow, wrist_yaw
+        self.left_arm_actuators = [15, 16, 17, 18]  # shoulder pitch/roll/yaw, elbow, wrist_yaw
+        self.right_arm_actuators = [29, 30, 31, 32]  # shoulder pitch/roll/yaw, elbow, wrist_yaw
         self.left_wrist_locked = [19, 20]  # Lock wrist roll/pitch only
         self.right_wrist_locked = [33, 34]  # Lock wrist roll/pitch only
         self.hand_actuators = list(range(22, 29)) + list(range(36, 43))
  
         
         # ACTION SPACE: Control both arms (10 DOF total)
-        both_arm_actuators = self.left_arm_actuators + self.right_arm_actuators
-
-        low = self.model.actuator_ctrlrange[both_arm_actuators, 0]
-        high = self.model.actuator_ctrlrange[both_arm_actuators, 1]
-
-        self.action_space = Box(
-            low=low,
-            high=high,
-            dtype=np.float64
+        self.controlled_actuators = (
+            self.left_arm_actuators
+             + self.right_arm_actuators
         )
-        self.both_arm_actuators = both_arm_actuators
+
+        low = self.model.actuator_ctrlrange[self.controlled_actuators, 0]
+        high = self.model.actuator_ctrlrange[self.controlled_actuators, 1]
+
+        self.action_space = Box(low=low,high=high,dtype=np.float64)
         print(f"Action Space: {self.action_space.shape} (left arm: shoulder + elbow)")
         
         # =================================================================
@@ -259,6 +299,13 @@ class G1BoxGraspEnv(gym.Env):
         self.min_right_hand_dist = 1000
         # weight for moving-away penalty (positive number); will subtract reward when moving away
         self.w_move_away = 2.0
+
+        # Debug: store last reward breakdown
+        self.last_reward_debug = {}
+
+        # termination reason
+        self.term_reason = ""
+
         
         # Rendering
         self.viewer = None
@@ -267,44 +314,101 @@ class G1BoxGraspEnv(gym.Env):
         self.render_dt = 1.0 / self.render_fps
 
     def _get_obs_limits(self):
-        """Set observation space limits"""
+        """Set observation space limits to match get_obs() layout."""
         obs_low = []
         obs_high = []
-        
-        # Arm position limits (from actuator ranges)
-        # Left arm
-        obs_low.extend(self.model.actuator_ctrlrange[self.left_arm_actuators, 0])
-        obs_high.extend(self.model.actuator_ctrlrange[self.left_arm_actuators, 1])
-        # Right arm
-        obs_low.extend(self.model.actuator_ctrlrange[self.right_arm_actuators, 0])
-        obs_high.extend(self.model.actuator_ctrlrange[self.right_arm_actuators, 1])
-        
-        # Arm velocity limits (keep slow!)
-        max_arm_vel = 1.0  # rad/s - adjust this to control speed of robot's arms
-        obs_low.extend([-max_arm_vel] * 10)  # 5 DOF x 2 arms
-        obs_high.extend([max_arm_vel] * 10)
 
-        # Arm torque/force observation (unbounded or large bounds)
-        obs_low.extend([-np.inf] * 10)
-        obs_high.extend([np.inf] * 10)
-        
-        # Box state (position, orientation, velocity) - unbounded
-        obs_low.extend([-np.inf] * 13)
-        obs_high.extend([np.inf] * 13)
-        
-        # Hand positions - unbounded
-        obs_low.extend([-np.inf] * 6)
-        obs_high.extend([np.inf] * 6)
-        
-        # Box-to-hand vectors - unbounded
-        obs_low.extend([-np.inf] * 6)
-        obs_high.extend([np.inf] * 6)
-        
-        # Target info - unbounded
-        obs_low.extend([-np.inf] * 3)
-        obs_high.extend([np.inf] * 3)
-        
-        return np.array(obs_low), np.array(obs_high)
+        # -----------------------------
+        # 1) Left arm qpos (5)
+        # -----------------------------
+        # Simple symmetric joint limits; you can tighten later or read from model.
+        max_qpos = 2.0   # radians
+        obs_low.extend([-max_qpos] * 4)
+        obs_high.extend([ max_qpos] * 4)
+
+        # -----------------------------
+        # 2) Left arm qvel (5)
+        # -----------------------------
+        max_arm_vel = 1.0  # rad/s
+        obs_low.extend([-max_arm_vel] * 4)
+        obs_high.extend([ max_arm_vel] * 4)
+
+        # -----------------------------
+        # 3) Right arm qpos (5)
+        # -----------------------------
+        obs_low.extend([-max_qpos] * 4)
+        obs_high.extend([ max_qpos] * 4)
+
+        # -----------------------------
+        # 4) Right arm qvel (5)
+        # -----------------------------
+        obs_low.extend([-max_arm_vel] * 4)
+        obs_high.extend([ max_arm_vel] * 4)
+
+        # -----------------------------
+        # 5) Arm + hand torques/forces (len(self.controlled_actuators))
+        # -----------------------------
+        # You can replace 5.0 with something derived from actuator_forcerange.
+        max_torque = 25.0
+        torque_dim = len(self.controlled_actuators)
+        obs_low.extend([-max_torque] * torque_dim)
+        obs_high.extend([ max_torque] * torque_dim)
+
+        # -----------------------------
+        # 6) Box position (3), quaternion (4), velocity (6)
+        # -----------------------------
+        # Position: moderately bounded workspace
+        max_pos = 2.0
+        obs_low.extend([-max_pos] * 3)
+        obs_high.extend([ max_pos] * 3)
+
+        # Quaternion components in [-1, 1]
+        obs_low.extend([-1.0] * 4)
+        obs_high.extend([ 1.0] * 4)
+
+        # Box linear + angular velocity (6) – leave fairly wide
+        max_box_vel = 10.0
+        obs_low.extend([-max_box_vel] * 6)
+        obs_high.extend([ max_box_vel] * 6)
+
+        # -----------------------------
+        # 7) Hand positions (3 + 3)
+        # -----------------------------
+        max_hand_pos = 2.0
+        obs_low.extend([-max_hand_pos] * 3)  # left hand
+        obs_high.extend([ max_hand_pos] * 3)
+
+        obs_low.extend([-max_hand_pos] * 3)  # right hand
+        obs_high.extend([ max_hand_pos] * 3)
+
+        # -----------------------------
+        # 8) Box-to-hand vectors (3 + 3)
+        # -----------------------------
+        max_rel = 2.0
+        obs_low.extend([-max_rel] * 3)  # box_to_left
+        obs_high.extend([ max_rel] * 3)
+
+        obs_low.extend([-max_rel] * 3)  # box_to_right
+        obs_high.extend([ max_rel] * 3)
+
+        # -----------------------------
+        # 9) Target info (3)
+        # -----------------------------
+        # (target height, current height, height error)
+        max_height = 2.0
+        obs_low.extend([-max_height, -max_height, -max_height])
+        obs_high.extend([ max_height,  max_height,  max_height])
+
+        obs_low = np.array(obs_low, dtype=np.float64)
+        obs_high = np.array(obs_high, dtype=np.float64)
+
+        assert obs_low.shape == obs_high.shape, "Low/high bounds shape mismatch!"
+        expected_dim = self._calculate_obs_dim()
+        assert obs_low.shape[0] == expected_dim, (
+            f"Obs bounds dim {obs_low.shape[0]} != obs dim {expected_dim}"
+        )
+
+        return obs_low, obs_high
 
 
 
@@ -319,11 +423,11 @@ class G1BoxGraspEnv(gym.Env):
     def _calculate_obs_dim(self):
         """Calculate total observation dimensions"""
         dim = 0
-        dim += 5  # Left arm qpos
-        dim += 5  # Left arm qvel
-        dim += 5  # Right arm qpos
-        dim += 5  # Right arm qvel
-        dim += 10 # Arm actuator torques (5 DOF x 2 arms)
+        dim += 4  # Left arm qpos
+        dim += 4  # Left arm qvel
+        dim += 4  # Right arm qpos
+        dim += 4  # Right arm qvel
+        dim += len(self.controlled_actuators)  # Arm torques/forces
         dim += 3  # Box position
         dim += 4  # Box quaternion
         dim += 6  # Box velocity (linear + angular)
@@ -361,19 +465,19 @@ class G1BoxGraspEnv(gym.Env):
         Returns: concatenated array of all observation components
         """
         # Left arm state (now 5 DOF with wrist yaw)
-        left_arm_qpos_indices = [22, 23, 24, 25, 28]  # shoulder + elbow + wrist_yaw
-        left_arm_qvel_indices = [21, 22, 23, 24, 27]
+        left_arm_qpos_indices = [22, 23, 24, 25]  # shoulder + elbow + wrist_yaw
+        left_arm_qvel_indices = [21, 22, 23, 24]
         left_arm_qpos = self.data.qpos[left_arm_qpos_indices]
         left_arm_qvel = self.data.qvel[left_arm_qvel_indices]
         
         # Right arm state (now 5 DOF with wrist yaw)
-        right_arm_qpos_indices = [36, 37, 38, 39, 42]
-        right_arm_qvel_indices = [35, 36, 37, 38, 41]
+        right_arm_qpos_indices = [36, 37, 38, 39]
+        right_arm_qvel_indices = [35, 36, 37, 38]
         right_arm_qpos = self.data.qpos[right_arm_qpos_indices]
         right_arm_qvel = self.data.qvel[right_arm_qvel_indices]
 
         # Arm actuator torques/forces for both arms
-        arm_torques = self.data.actuator_force[self.both_arm_actuators]
+        arm_torques = self.data.actuator_force[self.controlled_actuators]
 
         
         # Box state
@@ -464,177 +568,7 @@ class G1BoxGraspEnv(gym.Env):
                 return np.linalg.norm(force[:3])  # Normal force magnitude
         
         return 0.0
-    
-    def calculate_reward(self, action: np.ndarray) -> float:
-        """
-        Simplified reward focused on:
-          1. Mirrored arms (shoulder roll & pitch symmetry)
-          2. Bringing hands to the sides of the box (via shoulder roll)
-          3. Lifting the box up (via shoulder pitch)
 
-        Extra things like grip force shaping, finger balance, detailed
-        vertical alignment, etc. are intentionally removed.
-        """
-        reward = 0.0
-
-        # -----------------------------
-        # Weights (tune as needed)
-        # -----------------------------
-        w_symmetry_roll  = 4.0   # left roll ≈ -right roll
-        w_symmetry_pitch = 4.0   # left pitch ≈ right pitch
-        w_reach          = 6.0   # hands to box sides
-        w_lift           = 10.0  # lifting the box
-        w_contact_gate   = 4.0   # encourage bilateral contact
-        w_smooth         = 0.002 # very small action penalty
-        w_fail           = 5.0   # soft penalty for dropping box
-        w_wrist_yaw      = 8.0 
-
-        # --------------------------------------------------------------
-        # BOX STATE
-        # --------------------------------------------------------------
-        box_pos  = self.data.qpos[self.box_qpos_start:self.box_qpos_start+3]
-        box_quat = self.data.qpos[self.box_qpos_start+3:self.box_qpos_start+7]
-
-        current_height = box_pos[2]
-        start_height   = self.initial_box_pos[2]
-        target_height  = self.target_lift_height
-
-        height_gain  = current_height - start_height
-        total_needed = max(target_height - start_height, 1e-6)
-        height_progress = np.clip(height_gain / total_needed, 0.0, 1.0)
-
-        # --------------------------------------------------------------
-        # HAND POSITIONS (averaged over thumb / index / middle)
-        # --------------------------------------------------------------
-        left_thumb_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_thumb_0_link")
-        left_index_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_index_0_link")
-        left_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_middle_0_link")
-
-        right_thumb_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_thumb_0_link")
-        right_index_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_index_0_link")
-        right_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_middle_0_link")
-
-        left_hand_pos = (
-            self.data.xpos[left_thumb_id] +
-            self.data.xpos[left_index_id] +
-            self.data.xpos[left_middle_id]
-        ) / 3.0
-
-        right_hand_pos = (
-            self.data.xpos[right_thumb_id] +
-            self.data.xpos[right_index_id] +
-            self.data.xpos[right_middle_id]
-        ) / 3.0
-
-        # --------------------------------------------------------------
-        # 1. ARM SYMMETRY (directly targets shoulder roll & pitch)
-        # --------------------------------------------------------------
-        # Assumes you have these indices defined in __init__:
-        #   self.left_shoulder_roll_qpos_idx
-        #   self.right_shoulder_roll_qpos_idx
-        #   self.left_shoulder_pitch_qpos_idx
-        #   self.right_shoulder_pitch_qpos_idx
-
-        left_roll  = float(self.data.qpos[self.left_shoulder_roll_qpos_idx])
-        right_roll = float(self.data.qpos[self.right_shoulder_roll_qpos_idx])
-
-        left_pitch  = float(self.data.qpos[self.left_shoulder_pitch_qpos_idx])
-        right_pitch = float(self.data.qpos[self.right_shoulder_pitch_qpos_idx])
-
-        # Roll: want left ≈ -right  → (left + right) ≈ 0
-        roll_sym_error = left_roll + right_roll
-        roll_sym_term  = np.exp(- (roll_sym_error ** 2) / (2.0 * (0.15 ** 2)))  # ~0.15 rad tolerance
-        reward += w_symmetry_roll * roll_sym_term
-
-        # Pitch: want left ≈ right → (left - right) ≈ 0
-        pitch_sym_error = left_pitch - right_pitch
-        pitch_sym_term  = np.exp(- (pitch_sym_error ** 2) / (2.0 * (0.15 ** 2)))
-        reward += w_symmetry_pitch * pitch_sym_term
-
-        # --------------------------------------------------------------
-        # 1b. WRIST YAW TARGETS: left ≈ -0.6, right ≈ +0.6 (or 6.0 if you mean that)
-        # --------------------------------------------------------------
-        left_wrist_yaw  = float(self.data.qpos[self.left_wrist_yaw_qpos_idx])
-        right_wrist_yaw = float(self.data.qpos[self.right_wrist_yaw_qpos_idx])
-
-        # Desired targets
-        target_left_yaw  = -0.6
-        target_right_yaw =  0.6   # change to 6.0 if you literally mean 6 rad
-
-        # Gaussian-shaped rewards around the target angles
-        sigma = 0.15  # tolerance in radians
-
-        left_yaw_err  = left_wrist_yaw  - target_left_yaw
-        right_yaw_err = right_wrist_yaw - target_right_yaw
-
-        left_yaw_term  = np.exp(- (left_yaw_err  ** 2) / (2.0 * sigma ** 2))
-        right_yaw_term = np.exp(- (right_yaw_err ** 2) / (2.0 * sigma ** 2))
-
-        wrist_yaw_reward = 0.5 * (left_yaw_term + right_yaw_term)
-        reward += w_wrist_yaw * wrist_yaw_reward
-
-
-        # --------------------------------------------------------------
-        # 2. REACHING: HANDS TO BOX SIDES (driven mostly by shoulder roll)
-        # --------------------------------------------------------------
-        # We want left hand on +Y side and right hand on -Y side at box center height
-        xNudge = 0.0   # can bias forward/back if you want
-        target_left  = box_pos + np.array([xNudge,  self.box_half_depth, 0.0])
-        target_right = box_pos + np.array([xNudge, -self.box_half_depth, 0.0])
-
-        left_dist  = np.linalg.norm(left_hand_pos  - target_left)
-        right_dist = np.linalg.norm(right_hand_pos - target_right)
-
-        reach_scale      = 0.4  # characteristic distance
-        left_reach_term  = np.exp(-left_dist  / reach_scale)
-        right_reach_term = np.exp(-right_dist / reach_scale)
-        reach_reward     = 0.5 * (left_reach_term + right_reach_term)
-
-        reward += w_reach * reach_reward
-
-        # --------------------------------------------------------------
-        # 3. SIMPLE CONTACT GATE (so it learns to actually pinch the box)
-        # --------------------------------------------------------------
-        left_finger_touching  = any(self.check_contact(b, "box_geom") for b in self.left_finger_bodies)
-        right_finger_touching = any(self.check_contact(b, "box_geom") for b in self.right_finger_bodies)
-        both_touching         = left_finger_touching and right_finger_touching
-
-        # small bonus once it manages bilateral contact
-        if both_touching and not self.had_bilateral_contact:
-            reward += w_contact_gate * 2.0
-            self.had_bilateral_contact = True
-
-        # tiny dense reward for maintaining bilateral contact
-        if both_touching:
-            reward += w_contact_gate * 0.2
-
-        # --------------------------------------------------------------
-        # 4. LIFT REWARD (primarily driven by shoulder pitch)
-        # --------------------------------------------------------------
-        # Only reward lifting if it's actually holding the box with both hands
-        if both_touching:
-            reward += w_lift * height_progress
-
-            # extra bonus on/above target
-            if current_height >= target_height:
-                reward += w_lift * 3.0
-
-        # --------------------------------------------------------------
-        # 5. SMALL ACTION PENALTY (keep it tame, but still allowed to move)
-        # --------------------------------------------------------------
-        action_norm_sq = float(np.dot(action, action))
-        reward -= w_smooth * action_norm_sq
-
-        # --------------------------------------------------------------
-        # 6. VERY SIMPLE "FAIL" SIGNALS (not about style, just disasters)
-        # --------------------------------------------------------------
-        # Box fell significantly below start
-        if current_height < start_height - 0.1:
-            reward -= w_fail
-
-        return float(reward)
-
-    
     def check_arm_self_collision(self):
         """Check if left arm touches right arm"""
         # Check any left hand body against any right hand body
@@ -682,82 +616,441 @@ class G1BoxGraspEnv(gym.Env):
 
         return False
 
+    def calculate_reward(self, action: np.ndarray) -> float:
+        """
+        Reward for Unitree G1 box grasping.
 
+        Priorities, in order:
+        1. Move hands near the box (approach).
+        2. Make multiple finger contacts with the box (grip),
+           but only count as a good grip if it's on the sides.
+        3. Lift the box up (lift).
+        4. Hold it near target height, stably (no throwing).
+        5. Move smoothly (low joint velocity & small actions).
+        """
+
+        reward = 0.0
+        debug = {}
+
+        # --------------------------------------------------------------
+        # Basic weights
+        # --------------------------------------------------------------
+        w_approach    = 7.0    # get hands to the box
+        w_grip        = 3.0    # make multiple contacts
+        w_lift        = 8.0    # lift the box
+        w_hold        = 7.0    # stable hold near target
+        w_action      = 0.003  # stronger penalty on big actions
+        w_fail        = 5.0    # penalize dropping box
+
+        w_bad_grip    = 8.0    # penalty if contacts but not side aligned
+        w_joint_vel   = 0.10   # penalize fast arm joint velocities
+        w_side        = 5.0          # reward for good side alignment
+
+        # stability / overshoot
+        w_overshoot   = 20.0
+        target_band   = 0.15
+        overshoot_tol = 0.05
+        side_alignment_threshold = 0.1
+
+        # --------------------------------------------------------------
+        # BOX STATE (height + progress)
+        # --------------------------------------------------------------
+        box_pos = self.data.qpos[self.box_qpos_start:self.box_qpos_start+3]
+
+        current_height = float(box_pos[2])
+        start_height   = float(self.initial_box_pos[2])
+        target_height  = float(self.target_lift_height)
+
+        height_gain  = current_height - start_height
+        total_needed = max(target_height - start_height, 1e-6)
+        height_progress = float(np.clip(height_gain / total_needed, 0.0, 1.0))
+
+        debug["height_progress"] = height_progress
+        debug["current_height"] = current_height
+        debug["target_height"] = target_height
+
+        # Box linear velocity
+        box_lin_vel = self.data.qvel[self.box_qvel_start:self.box_qvel_start+3]
+        box_ang_vel = self.data.qvel[self.box_qvel_start+3:self.box_qvel_start+6]
+        ang_speed = float(np.linalg.norm(box_ang_vel))
+
+        vertical_speed = abs(float(box_lin_vel[2]))
+        lateral_speed  = float(np.linalg.norm(box_lin_vel[:2]))
+        debug["vertical_speed"] = vertical_speed
+        debug["lateral_speed"] = lateral_speed
+
+        # --------------------------------------------------------------
+        # HAND POSITIONS
+        # --------------------------------------------------------------
+        left_thumb_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_thumb_0_link")
+        left_index_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_index_0_link")
+        left_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_middle_0_link")
+
+        right_thumb_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_thumb_0_link")
+        right_index_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_index_0_link")
+        right_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_middle_0_link")
+
+        left_hand_pos = (
+            self.data.xpos[left_thumb_id] +
+            self.data.xpos[left_index_id] +
+            self.data.xpos[left_middle_id]
+        ) / 3.0
+
+        right_hand_pos = (
+            self.data.xpos[right_thumb_id] +
+            self.data.xpos[right_index_id] +
+            self.data.xpos[right_middle_id]
+        ) / 3.0
+
+        hands_center = 0.5 * (left_hand_pos + right_hand_pos)
+
+        # --------------------------------------------------------------
+        # 1. APPROACH (XY distance of hand-center to box center)
+        # --------------------------------------------------------------
+        box_xy   = box_pos[:2]
+        hands_xy = hands_center[:2]
+
+        dist_xy = float(np.linalg.norm(hands_xy - box_xy))
+        approach_term = np.exp(-dist_xy / 0.3)
+
+        reward += w_approach * approach_term
+        debug["dist_xy"] = dist_xy
+        debug["approach_term"] = approach_term
+        debug["approach_contrib"] = w_approach * approach_term
+
+        # --------------------------------------------------------------
+        # 2. SIDE ALIGNMENT (pre-grasp geometry)
+        # --------------------------------------------------------------
+       
+        left_align  = self._side_alignment_reward(self.left_thumb_tip_body_id,  self.left_index_tip_body_id)
+        right_align = self._side_alignment_reward(self.right_thumb_tip_body_id, self.right_index_tip_body_id)
+
+        side_align = min(left_align, right_align)  # forces both to align
+        reward += w_side * side_align
+
+
+        debug["side_align"] = side_align
+        debug["side_align_contrib"] = w_side * side_align
+
+        # --------------------------------------------------------------
+        # 3. GRIP: contacts, but *gated* by side alignment
+        # --------------------------------------------------------------
+        left_contacts = sum(
+            1 for body in self.left_finger_bodies
+            if self.check_contact(body, "box_geom")
+        )
+        right_contacts = sum(
+            1 for body in self.right_finger_bodies
+            if self.check_contact(body, "box_geom")
+        )
+
+        total_contacts = left_contacts + right_contacts
+
+        # --- IMPORTANT: define "grip" as a *bilateral* contact, not a single touch.
+        # Use the weaker side (min) so PPO can't cheat with one-hand bumps.
+        bilateral_contacts = min(left_contacts, right_contacts)
+
+        # Normalize by the smaller finger set size so grip_frac∈[0,1] is meaningful.
+        max_per_hand = 2
+        grip_frac = float(np.clip(bilateral_contacts / max_per_hand, 0.0, 1.0))
+
+        # side_score ≈ 0 if we're on top; closer to 1.0 for good side alignment
+        side_score = side_align
+        side_factor = 0.2 + 0.8 * side_score  # in [0.2, 1.0]
+
+        grip_reward = w_grip * grip_frac * side_factor
+        reward += grip_reward
+
+        # Only call it a "good grip" if BOTH hands touch AND side alignment decent
+        has_side = side_align > side_alignment_threshold
+        has_grip = (left_contacts >= 1) and (right_contacts >= 1) and has_side
+
+        # Penalize contacts that are not side-aligned (encourages approaching from sides)
+        bad_grip_pen = 0.0
+        if total_contacts > 0 and not has_side:
+            bad_grip_pen = w_bad_grip * (1.0 - side_align)
+            reward -= bad_grip_pen
+
+        # Penalize unilateral touches (prevents "one-hand slap" strategies)
+        unilateral_pen = 0.0
+        if has_side and ((left_contacts > 0) ^ (right_contacts > 0)):
+            unilateral_pen = 0.5 * w_bad_grip
+            reward -= unilateral_pen
+
+        debug["left_contacts"] = left_contacts
+        debug["right_contacts"] = right_contacts
+        debug["total_contacts"] = total_contacts
+        debug["bilateral_contacts"] = bilateral_contacts
+        debug["grip_frac"] = grip_frac
+        debug["side_score"] = side_score
+        debug["side_factor"] = side_factor
+        debug["grip_contrib"] = grip_reward
+        debug["has_side"] = float(has_side)
+        debug["has_grip"] = float(has_grip)
+        debug["bad_grip_pen"] = bad_grip_pen
+        debug["unilateral_pen"] = unilateral_pen
+
+        # --------------------------------------------------------------
+        # 4. TOP-CONTACT PENALTY (discourage pressing on the lid)
+        # --------------------------------------------------------------
+        # Use contact *points* (not just body COM offsets), and include BOTH hands.
+        # This term should fire when the robot is "mashing down" on the box top.
+        if not hasattr(self, "_box_geom_id"):
+            self._box_geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "box_geom")
+        box_geom_id = self._box_geom_id
+
+        box_center_z = float(self.data.xpos[self.box_body_id][2])
+        top_z = box_center_z + 0.8 * float(self.box_half_height)  # was 0.9; too strict / rarely triggers
+
+        top_contact = False
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if (c.geom1 == box_geom_id) or (c.geom2 == box_geom_id):
+                # c.pos is the contact point in world coordinates
+                if float(c.pos[2]) > top_z:
+                    top_contact = True
+                    break
+
+        top_contact_pen = 0.0
+        if top_contact and total_contacts > 0:
+            top_contact_pen = 5.0  # stronger than before
+            reward -= top_contact_pen
+
+        debug["top_contact_pen"] = top_contact_pen
+
+        # --------------------------------------------------------------
+        # 5. LIFT + STABLE HOLD (only if we have a *good* grip)
+        # --------------------------------------------------------------
+        # NOTE: In early training, reaching the target height band is rare.
+        # To avoid a "dead" stability signal, we compute stability whenever has_grip is true
+        # and scale it by height_progress when below the target band.
+        stability_term = 0.0
+        overshoot = 0.0
+        overshoot_pen = 0.0
+        vel_pen = 0.0
+        hold_contrib = 0.0
+        lift_contrib = 0.0
+
+        height_error = current_height - target_height
+        debug["height_error"] = height_error
+
+        if has_grip:
+            # Lift shaping (still gated by bilateral grip)
+            lift_contrib = w_lift * height_progress
+            reward += lift_contrib
+
+            # Stability shaping (fires as soon as we have a bilateral grip)
+            vel_pen = 0.3 * vertical_speed + 1.0 * lateral_speed
+            stability_term = float(np.exp(-(vel_pen ** 2)))
+
+            # If near the target height, reward being still strongly;
+            # otherwise provide a smaller shaping reward that grows with lift progress.
+            if abs(height_error) <= target_band:
+                hold_contrib = w_hold * stability_term
+            else:
+                hold_contrib = 0.3 * w_hold * stability_term * height_progress
+
+            reward += hold_contrib
+
+            debug["vel_pen"] = vel_pen
+            debug["stability_term"] = stability_term
+            debug["hold_contrib"] = hold_contrib
+            debug["lift_contrib"] = lift_contrib
+
+            # Overshoot penalty (only matters once lifting works)
+            overshoot = max(0.0, current_height - (target_height + overshoot_tol))
+            if overshoot > 0.0:
+                overshoot_pen = w_overshoot * overshoot
+                reward -= overshoot_pen
+
+            box_quat = self.data.qpos[self.box_qpos_start+3:self.box_qpos_start+7]
+            box_rot = np.zeros(9)
+            mujoco.mju_quat2Mat(box_rot, box_quat)
+            box_rot_mat = box_rot.reshape(3, 3)
+
+            world_z = np.array([0.0, 0.0, 1.0])
+            box_z = box_rot_mat[:, 2]
+            tilt_cos = abs(np.dot(box_z, world_z))   # 1.0 = perfectly upright
+
+            upright_weight = 8.0
+            upright_bonus = upright_weight * float(tilt_cos) * (0.2 + 0.8 * height_progress)
+            reward += upright_bonus
+
+            debug["tilt_cos"] = tilt_cos
+            debug["ang_speed"] = ang_speed
+            debug["upright_bonus"] = upright_bonus
+            debug['ang_speed_pen'] = 1.0 * ang_speed * (0.5 + 0.5 * height_progress)
+
+            reward -= 1.0 * ang_speed * (0.5 + 0.5 * height_progress)
+            reward += 8.0 * tilt_cos * height_progress
+
+        debug["overshoot"] = overshoot
+        debug["overshoot_pen"] = overshoot_pen
+
+        # 6. ACTION & JOINT-VELOCITY PENALTIES (smoothness)
+        # --------------------------------------------------------------
+        action_norm_sq = float(np.dot(action, action))
+        action_pen = w_action * action_norm_sq
+        reward -= action_pen
+
+        # Penalize high joint velocities on both arms
+        left_arm_qvel_indices  = [21, 22, 23, 24]
+        right_arm_qvel_indices = [35, 36, 37, 38]
+        left_qvel  = self.data.qvel[left_arm_qvel_indices]
+        right_qvel = self.data.qvel[right_arm_qvel_indices]
+        joint_vel_norm = float(np.linalg.norm(np.concatenate([left_qvel, right_qvel])))
+        joint_vel_pen = w_joint_vel * joint_vel_norm
+        reward -= joint_vel_pen
+
+        debug["action_norm_sq"] = action_norm_sq
+        debug["action_pen"] = action_pen
+        debug["joint_vel_norm"] = joint_vel_norm
+        debug["joint_vel_pen"] = joint_vel_pen
+
+        # --------------------------------------------------------------
+        # 7. FAIL: box falls below its starting height
+        # --------------------------------------------------------------
+        fail_pen = 0.0
+        if current_height < start_height - 0.05:
+            fail_pen = w_fail
+            reward -= fail_pen
+
+        debug["fail_pen"] = fail_pen
+        debug["total_reward"] = reward
+
+        # --------------------------------------------------------------
+        # 8. SANITY: "firing rate" for sparse terms (helps debug reward shaping)
+        # --------------------------------------------------------------
+        fire_stability = 1.0 if stability_term > 1e-9 else 0.0
+        fire_top       = 1.0 if debug.get("top_contact_pen", 0.0) > 1e-9 else 0.0
+        fire_overshoot = 1.0 if debug.get("overshoot_pen", 0.0) > 1e-9 else 0.0
+
+        # Exponential moving averages so you can see whether terms ever activate.
+        if not hasattr(self, "_fire_ema"):
+            self._fire_ema = {"stability": 0.0, "top": 0.0, "overshoot": 0.0}
+        beta = 0.99
+        self._fire_ema["stability"] = beta * self._fire_ema["stability"] + (1.0 - beta) * fire_stability
+        self._fire_ema["top"]       = beta * self._fire_ema["top"]       + (1.0 - beta) * fire_top
+        self._fire_ema["overshoot"] = beta * self._fire_ema["overshoot"] + (1.0 - beta) * fire_overshoot
+
+        debug["stability_fire"] = fire_stability
+        debug["top_fire"] = fire_top
+        debug["overshoot_fire"] = fire_overshoot
+        debug["stability_fire_ema"] = float(self._fire_ema["stability"])
+        debug["top_fire_ema"] = float(self._fire_ema["top"])
+        debug["overshoot_fire_ema"] = float(self._fire_ema["overshoot"])
+
+        # Optional console print every N steps (uncomment if you want)
+        # if getattr(self, "current_step", 0) % 2000 == 0:
+        #     print(f"[reward firing] stab={self._fire_ema['stability']:.3f} top={self._fire_ema['top']:.3f} over={self._fire_ema['overshoot']:.3f}")
+        self.last_reward_debug = debug
+        return float(reward)
+    
     def terminate(self):
         """
-        STRICT ONE-SHOT TERMINATION:
-        - Robot has exactly ONE chance to pick up the box.
-        - If it ever loses the grasp after getting it → FAIL.
-        - If it lifts above target → SUCCESS.
-        - All safety violations → FAIL.
+        STRICT ONE-SHOT TERMINATION (but robust to contact flicker):
+        - Must acquire a bilateral grasp for K_ACQUIRE consecutive steps.
+        - After grasp acquired, if bilateral contact is lost for K_LOSS consecutive steps → FAIL.
+        - If it lifts above target while still in bilateral contact → SUCCESS.
+        - Safety violations → FAIL (with slightly relaxed box constraints before grasp).
         """
 
+        # -----------------------------
+        # Config (tune these)
+        # -----------------------------
+        Fmin = 2.0          # per-hand force threshold for "meaningful" contact
+        K_ACQUIRE = 3       # consecutive steps required to acquire grasp
+        K_LOSS = 10         # consecutive steps without bilateral contact to count as loss
+
+        # Pre-grasp tolerances (more forgiving so training can explore)
+        XY_TOL_PRE  = 0.25  # was 0.12
+        TILT_DEG_PRE = 55   # was 35
+
+        # Post-grasp tolerances (stricter)
+        XY_TOL_POST  = 0.12
+        TILT_DEG_POST = 35
+
+        # How many consecutive steps box must violate tilt before terminating
+        K_TILT = 5
+
+        # -----------------------------
+        # Box state
+        # -----------------------------
         box_pos = self.data.qpos[self.box_qpos_start:self.box_qpos_start+3]
-        current_height = box_pos[2]
+        current_height = float(box_pos[2])
 
         # -----------------------------
-        # 1. Check finger contact
+        # 1) Force-based bilateral contact (per-hand)
         # -----------------------------
-        left_touching = any(
-            self.check_contact(body, "box_geom") for body in self.left_finger_bodies
-        )
-        right_touching = any(
-            self.check_contact(body, "box_geom") for body in self.right_finger_bodies
-        )
-        both_touching = left_touching and right_touching
+        left_force  = sum(self.get_contact_force(b, "box_geom") for b in self.left_finger_bodies)
+        right_force = sum(self.get_contact_force(b, "box_geom") for b in self.right_finger_bodies)
+        both_touching = (left_force > Fmin) and (right_force > Fmin)
 
-        # First-time grasp
-        if both_touching and not self.had_bilateral_contact:
+        # -----------------------------
+        # 2) Update persistence FIRST (so it actually works)
+        # -----------------------------
+        if both_touching:
+            self.both_touch_steps += 1
+        else:
+            self.both_touch_steps = 0
+
+        # Acquire grasp only after K consecutive steps
+        if (not self.had_bilateral_contact) and (self.both_touch_steps >= K_ACQUIRE):
             self.had_bilateral_contact = True
+            self.term_reason = "grasp_acquired"
+            # Do NOT terminate here; just mark state.
 
-        # Lost grasp after having it once → FAIL
-        if self.had_bilateral_contact and not both_touching:
+        # Track loss only after grasp acquired
+        if self.had_bilateral_contact and (not both_touching):
+            self.grasp_lost_steps += 1
+        else:
+            self.grasp_lost_steps = 0
+
+        # If grasp was acquired and then lost persistently → FAIL
+        if self.had_bilateral_contact and (self.grasp_lost_steps >= K_LOSS):
+            self.term_reason = "grasp_lost_persistent"
             return True
 
-        # SUCCESS: lifted above target while grasping
-        if self.had_bilateral_contact and current_height >= self.target_lift_height:
-            return True
-        
         # -----------------------------
-        # NEW: moved away without ever grasping → FAIL
+        # 3) SUCCESS: lifted above target while grasping NOW
         # -----------------------------
-        if not self.had_bilateral_contact and self.current_step > 20:
-            # compute current hand distances to box
-            left_thumb_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_thumb_0_link")
-            left_index_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_index_0_link")
-            left_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_hand_middle_0_link")
-
-            right_thumb_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_thumb_0_link")
-            right_index_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_index_0_link")
-            right_middle_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_hand_middle_0_link")
-
-            left_hand_pos = (self.data.xpos[left_thumb_id] +
-                             self.data.xpos[left_index_id] +
-                             self.data.xpos[left_middle_id]) / 3.0
-
-            right_hand_pos = (self.data.xpos[right_thumb_id] +
-                              self.data.xpos[right_index_id] +
-                              self.data.xpos[right_middle_id]) / 3.0
-
-            left_dist_now  = np.linalg.norm(left_hand_pos  - box_pos)
-            right_dist_now = np.linalg.norm(right_hand_pos - box_pos)
-
-            margin = 0.10  # how much further than start we tolerate
-
-            if (left_dist_now  > self.initial_left_hand_dist  + margin or
-                right_dist_now > self.initial_right_hand_dist + margin):
-                return True
-
-        # Box dropped too low
-        if current_height < self.initial_box_pos[2] - 0.05:
+        if self.had_bilateral_contact and both_touching and (current_height >= float(self.target_lift_height)):
+            self.term_reason = "success_lifted"
             return True
 
-        # Box moved too far sideways
-        xy_dist = np.linalg.norm(box_pos[:2] - self.initial_box_pos[:2])
-        if xy_dist > 0.12:
+        # -----------------------------
+        # 4) Safety / failure checks
+        # -----------------------------
+
+        # Robot-table contact
+        if self.check_contact_any_robot_part("table_geom"):
+            self.term_reason = "robot_touches_table"
             return True
 
-        # Tilt too much
+        # Arm–arm collision
+        if self.check_arm_self_collision():
+            self.term_reason = "arm_self_collision"
+            return True
+
+        # Robot falls (note: you’re reading qpos[2] as torso height; make sure that’s really torso z)
+        torso_height = float(self.data.qpos[2])
+        if torso_height < 0.6:
+            self.term_reason = "robot_fallen"
+            return True
+
+        # Box dropped too low (slightly more forgiving than -0.01 if needed)
+        if current_height < float(self.initial_box_pos[2]) - 0.02:
+            self.term_reason = "box_dropped"
+            return True
+
+        # Box moved too far sideways (relaxed pre-grasp, strict post-grasp)
+        xy_dist = float(np.linalg.norm(box_pos[:2] - self.initial_box_pos[:2]))
+        xy_tol = XY_TOL_POST if self.had_bilateral_contact else XY_TOL_PRE
+        if xy_dist > xy_tol:
+            self.term_reason = "box_moved_away"
+            return True
+
+        # Tilt too much (relaxed pre-grasp, strict post-grasp, plus persistence)
         box_quat = self.data.qpos[self.box_qpos_start+3:self.box_qpos_start+7]
         box_rot = np.zeros(9)
         mujoco.mju_quat2Mat(box_rot, box_quat)
@@ -765,35 +1058,41 @@ class G1BoxGraspEnv(gym.Env):
 
         world_z = np.array([0.0, 0.0, 1.0])
         box_z = box_rot_mat[:, 2]
-        tilt_cos = abs(np.dot(box_z, world_z))
+        tilt_cos = abs(float(np.dot(box_z, world_z)))
 
-        if tilt_cos < np.cos(np.radians(25)):
-            return True
+        tilt_deg_tol = TILT_DEG_POST if self.had_bilateral_contact else TILT_DEG_PRE
+        tilt_cos_tol = float(np.cos(np.radians(tilt_deg_tol)))
 
-        # Arm–arm collision
-        if self.check_arm_self_collision():
-            return True
+        if not hasattr(self, "tilt_violation_steps"):
+            self.tilt_violation_steps = 0
 
-        # Robot touches table
-        if self.check_contact_any_robot_part("table_geom"):
-            return True
+        if tilt_cos < tilt_cos_tol:
+            self.tilt_violation_steps += 1
+        else:
+            self.tilt_violation_steps = 0
 
-        # Robot falls
-        torso_height = self.data.qpos[2]
-        if torso_height < 0.6:
+        if self.tilt_violation_steps >= K_TILT:
+            self.term_reason = "box_tilted"
             return True
 
         # Max steps
         if self.current_step >= self.max_episode_steps:
+            self.term_reason = "max_steps_exceeded"
             return True
 
+        self.term_reason = "none"
         return False
 
-    
+
     def reset(self, seed=None, options=None):
         """Reset environment to initial state"""
 
+        self.both_touch_steps = 0
+        self.grasp_lost_steps = 0
         self.had_bilateral_contact = False
+        self.tilt_violation_steps = 0
+        self.term_reason = "none"
+
 
         # reset moving-away tracking per episode
         self.min_left_hand_dist = 1000
@@ -858,15 +1157,15 @@ class G1BoxGraspEnv(gym.Env):
         action = np.clip(action, self.action_space.low, self.action_space.high)
         
         # Apply action to left arm
-        self.data.ctrl[self.both_arm_actuators] = action
+        self.data.ctrl[self.controlled_actuators] = action
 
     
         # Lock lower body
         self.data.ctrl[self.locked_actuators] = self.standing_ctrl[self.locked_actuators]
         
         # Lock wrists at fixed angles (palms facing inward)
-        self.data.ctrl[self.left_wrist_locked] = self.standing_ctrl[self.left_wrist_locked]
-        self.data.ctrl[self.right_wrist_locked] = self.standing_ctrl[self.right_wrist_locked]
+        # self.data.ctrl[self.left_wrist_locked] = self.standing_ctrl[self.left_wrist_locked]
+        # self.data.ctrl[self.right_wrist_locked] = self.standing_ctrl[self.right_wrist_locked]
         
         # Freeze all fingers
         self.data.ctrl[self.hand_actuators] = self.standing_ctrl[self.hand_actuators]
@@ -936,8 +1235,13 @@ class G1BoxGraspEnv(gym.Env):
             'step': self.current_step,
             'left_contact': any(self.check_contact(body, "box_geom") for body in self.left_hand_bodies),
             'right_contact': any(self.check_contact(body, "box_geom") for body in self.right_hand_bodies),
+            'termination_reason': getattr(self, "term_reason", "not_terminated"),
         }
                 
+        # Attach reward breakdown for logging/debugging
+        if hasattr(self, "last_reward_debug"):
+            info.update(self.last_reward_debug)
+
         # Render if needed
         if self.render_mode == "human":
             self.render()
@@ -952,6 +1256,46 @@ class G1BoxGraspEnv(gym.Env):
         self.min_right_hand_dist = min(self.min_right_hand_dist, right_dist)
         
         return obs, reward, terminated, truncated, info
+    
+    def _has_contact_between(self, geom_ids_a, geom_ids_b) -> bool:
+        """
+        Return True if any contact exists between any geom in A and any geom in B.
+        """
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            g1, g2 = c.geom1, c.geom2
+            if (g1 in geom_ids_a and g2 in geom_ids_b) or (g2 in geom_ids_a and g1 in geom_ids_b):
+                return True
+        return False
+    
+    def _thumb_box_contact(self) -> bool:
+        return self._has_contact_between(self.left_thumb_geom_ids, [self.box_geom_id])
+
+    def _index_box_contact(self) -> bool:
+        return self._has_contact_between(self.left_index_geom_ids, [self.box_geom_id])
+        
+    def _side_alignment_reward(self, thumb_tip_body_id, index_tip_body_id) -> float:
+        box_pos   = self.data.xpos[self.box_body_id]
+        thumb_pos = self.data.xpos[thumb_tip_body_id]
+        index_pos = self.data.xpos[index_tip_body_id]
+
+        thumb_offset = thumb_pos - box_pos
+        index_offset = index_pos - box_pos
+
+        top_thresh = 0.85 * self.box_half_height
+        if thumb_offset[2] > top_thresh or index_offset[2] > top_thresh:
+            return 0.0
+
+        y_sep   = abs(thumb_offset[1] - index_offset[1])
+        y_score = np.clip(y_sep / (2 * self.box_half_depth), 0.0, 1.0)
+
+        sigma = 0.08
+        x_center = 0.5 * (thumb_offset[0] + index_offset[0])
+        x_score = np.exp(- (x_center ** 2) / (2 * sigma ** 2))
+
+        return float(np.clip(y_score * x_score, 0.0, 1.0))
+
+
     
     def render(self):
         """Render the environment"""

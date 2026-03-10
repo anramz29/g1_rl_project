@@ -1,7 +1,7 @@
 # g1_box_grasp_eval.py
 
 from stable_baselines3 import PPO
-from g1_box_grasp_env_both_arms_adrian_original import G1BoxGraspEnv
+from g1_box_grasp_env_both_arms_adrian import G1BoxGraspEnv
 import sys
 import os
 
@@ -81,6 +81,7 @@ try:
         episode_reward = 0
         done = False
         step = 0
+
         
         print(f"\nEpisode {episode}")
         
@@ -98,6 +99,7 @@ try:
         print(f"  Final box height: {info['box_height']:.3f}m")
         print(f"  Left contact: {info['left_contact']}")
         print(f"  Right contact: {info['right_contact']}")
+        print(f"  Termination reason: {info.get('termination_reason', 'N/A')}")
 
 except KeyboardInterrupt:
     print("\n\nEvaluation stopped by user.")
