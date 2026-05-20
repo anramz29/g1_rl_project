@@ -2,6 +2,12 @@
 
 Reinforcement learning for the **Unitree G1 humanoid robot** to perform a **box grasping task** using MuJoCo and Stable-Baselines3.
 
+## Technical Report
+
+A detailed write-up covering environment design, reward shaping, and results is available here:
+
+[G1 Box Grasp – Technical Report (PDF)](EECE5552_Final_Project_Report.pdf)
+
 ## Demo
 
 [![G1 Box Grasp Demo](https://img.youtube.com/vi/kKOSwQv5tlA/0.jpg)](https://youtu.be/kKOSwQv5tlA)
